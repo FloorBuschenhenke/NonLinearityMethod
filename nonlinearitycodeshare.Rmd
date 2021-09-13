@@ -1,0 +1,621 @@
+---
+title: "NonlinearityAnalysis"
+author: "Anonymous"
+date: "15-1-2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+require(tidyverse)
+```
+
+##Introduction
+
+This notebook presents the code used to create a non-linearity analysis on the basis of keystroke data from the logger Inputlog, and accompanies the paper *Measuring non-linearity of long-term writing processes* (submitted to Reading & Writing special issue on methodology). For context, the abstract of our paper follows below. 
+
+## Abstract
+
+Non-linearity in writing provides important insight into the dynamics of writing and writing disfluencies. Currently, a range of linearity measures are available. These metrics are calculated based upon the leading edge, and are mostly used for short texts and single writing sessions. However, for longer, multi-session writing processes, the concept of the leading edge, as the singular outer boundary of the text-in-progress, is not enough to distinguish between linear production and non-linear text alterations.
+Therefore, in the current study, we propose a novel automatized non-linearity analysis. Within this approach, all backwards and forwards cursor and mouse operations from the point of utterance are extracted from keystroke data, and characterized both based on duration and distance. 
+We illustrate this approach by analyzing the writing process of a complete novel based on more than 400 writing sessions totaling 276 hours of writing. The results show that this approach allows us to successfully cluster these writing sessions using the non-linearity characteristics.
+
+## Overview of the steps we have taken
+
+We are using Inputlog-General Analysis files as our source material. You could apply the steps to the output of other keystroke loggers as well. The General Analysis is a table in which each keystroke action has its own row. It is quite similar to the raw output from other academic keystroke loggers.
+
+Steps:
+1. load all General Analysis files (one for each writing session) into R and merge them into one table, preserving the original session-numbering. (not including in this notebook)
+2. aggregate/annotate the keystroke events in this table into larger segments of typing, deleting, jumping/navigating and focus (activities outside of the work doc).
+3. Calculate characteristics for each jump event, each typing event and on a session-level for focus events
+4. Create a summary table with descriptive statistics for each session
+5. Running a correlation matrix, removing highly correlation variables, then performing a cluster analysis to explore similarities between sessions. This step is not included in this notebook. 
+
+## Installation, use and requirements
+You need the package Tidyverse to run this notebook.If you do not have it yet, you can use this code:
+```{r}
+install.packages('tidyverse')
+
+```
+
+## Load data
+```{r}
+
+# this is a demo session. Our real data is not shared, due to privacy concerns and agreements with the participants.
+
+# for example, create a new project in Rstudio, place csv-file in the same folder as this rmd-file.
+all_data <- read.csv("demo_data_nonlinearity.csv", stringsAsFactors = F, fileEncoding = 'latin1')
+```
+# Raw data sneakpeak
+This is what our raw keystroke files look like. Each line is a keystroke event. 
+
+```{r}
+# for just the first five lines
+head(all_data)
+
+# for all of the data (fine for our sample session, may crash when you have large files)
+view(all_data)
+```
+
+
+
+## Add segmentation (step 2)
+
+We start by labeling several groups of keyboard input. We define the category of arrow keys (as they are used to initiate non-linearity), and we distinguish between visible characters, whitespace, deletion keys and function keys (such as the Control key).
+
+```{r}
+##########------------ Add info -----------------------------------------#######
+arrow_keys <- c("UP", "DOWN", "LEFT", "RIGHT", "END", "HOME", "PAGE_DOWN",
+                "PAGE_UP")
+
+# Check all possible keystrokes 
+keys <- all_data %>% filter(event_type__E_ =="keyboard")
+keyst <- data.frame(event_output__E_ = unique(keys$event_output__E_), 
+                    stringsAsFactors = F) 
+
+keyst_add <- keyst %>%
+  mutate(length = nchar(as.character(event_output__E_)),
+         type = ifelse((length < 3 & event_output__E_ != "UP") | 
+                         grepl("OEM_", event_output__E_), "visible_char",
+                ifelse(event_output__E_ %in% c("SPACE", "RETURN", "TAB"),
+                       "whitespace",
+                ifelse(grepl("UP|DOWN|LEFT|RIGHT|END|HOME", event_output__E_),
+                       "arrow_key",
+                ifelse(event_output__E_ %in% c("BACK", "DELETE"),
+                       "delete_key",
+                "function_key")))))
+  
+
+
+```
+
+Then, we add boundaries between non-linear jumps and the other types of events. In the #notes in the code below, you can see how we distinguish between 6 different situations in which we are placing a boundary. 
+
+```{r}
+# Add boundaries for non-linearity
+data_add <- all_data %>%
+  # Remove keystrokes outside doc (e.g., save as XXX)
+  filter(!(event_type__E_ == "keyboard" & is.na(event_position__E_))) %>%
+  
+  left_join(keyst_add) %>%
+  # Calculate per session/file separately
+  group_by(session_number) %>%
+  mutate(jump_start = ifelse(
+    row_number() == 1 |
+    #1)	When a typist moves from typing a character to a mouse event 
+    #   (click, movement, scroll, selection), or vice versa.
+    (event_type__E_ == "keyboard" & 
+       (type %in% c("visible_char", "whitespace") | 
+          event_output__E_ == "CAPS LOCK" |
+                    (type == "function_key" & 
+                     event_pauseLocationFull__E_ == "COMBINATION KEY"))  &
+      (lag(event_type__E_) == "mouse" | event_type__E_ == "replacement")) | 
+      ((event_type__E_ == "mouse" | lag(event_type__E_) == "replacement")  &
+      lag(event_type__E_) == "keyboard" & 
+         (lag(type) %in% c("visible_char", "whitespace")) |
+        event_output__E_ == "CAPS LOCK") |
+    #2) When a typists moves from an insertion to another event, or vice versa.
+    (lag(event_type__E_) %in% c("insert") & 
+       event_type__E_ != lag(event_type__E_) |
+      (event_type__E_ %in% c("insert")  &
+         lag(event_type__E_) != event_type__E_)) |
+    #3)	When a typist moves from typing a character to typing an arrow key, 
+    #   or vice versa.
+      (event_type__E_ == "keyboard" & 
+         (type %in% c("visible_char", "whitespace") |
+            event_output__E_ == "CAPS LOCK" |
+            (type == "function_key" & 
+               event_pauseLocationFull__E_ == "COMBINATION KEY")) &
+         lag(event_type__E_) == "keyboard" & lag(type) == "arrow_key") | 
+      (event_type__E_ == "keyboard" & type == "arrow_key"
+       & (lag(event_type__E_) == "keyboard" & 
+         lag(type) %in% c("visible_char", "whitespace"))  | 
+         lag(event_type__E_) == "replacement")  |
+    #4)	When a typists moves from a keystroke or mouse event to a 
+    #   delete/backspace keypress, or vice versa.
+      (event_type__E_ %in% c("mouse","keyboard", "insert") & 
+         (is.na(type) | type != "delete_key") &
+         lag(event_type__E_) == "keyboard" & lag(type) == "delete_key") | 
+      (event_type__E_ == "keyboard" & type == "delete_key"
+       & lag(event_type__E_) %in% c("mouse","keyboard", "insert") & 
+         !lag(event_output__E_) %in% c("DELETE", "BACK")) |  
+    #5)	When a typist moves from one mode of deletion to another (e.g., from 
+    #   delete key to backspace key press).
+      (type == "delete_key" & lag(type) == "delete_key" & 
+      (event_output__E_) != lag(event_output__E_)) |
+    #6)	When a typist moves from the main text to a different source 
+    #   (e.g., online dictionary)
+      (lag(event_type__E_) %in% c("focus") & 
+         event_type__E_ != lag(event_type__E_)) |
+         (event_type__E_ %in% c("focus") & 
+            event_type__E_ != lead(event_type__E_)) , 1, 0),
+    
+    #Part B
+ # Set to zero if selection is directly followed by insert/delete.
+    # (A series of deletions count as one event.)
+    #delete - replacement
+    jump_start = ifelse((event_type__E_ == "replacement" &
+                            lag(event_output__E_) == "DELETE" & 
+                            event_startClock__E_ == lag(event_startClock__E_) &
+                            event_endClock__E_ == lag(event_endClock__E_))
+                         | (lag(event_type__E_) == "replacement" &
+                              event_output__E_ == "DELETE" &
+                                lead(event_type__E_) == "replacement"  & 
+                          lag(event_output__E_,2) == "DELETE" ) |
+                          (event_type__E_ == "replacement" &
+                          lag(event_type__E_) == "replacement") |
+                          is.na(jump_start), 0, jump_start),
+    # Create count number of linear event
+    jump_number = ifelse(jump_start == 1,
+                       cumsum(jump_start == 1 |
+                                row_number() == 1), NA),
+      prev_loc = lag(event_pauseLocationFull__E_),
+      next_loc = lead(event_pauseLocationFull__E_),
+      endTime_session = max(event_endTime__E_)
+    ) %>%
+  fill(jump_number) 
+  
+
+
+## Replacing 0 with NA for further processing 
+data_add %>%
+mutate(event_charProduction__E_= ifelse(event_charProduction__E_ ==0, NA, event_charProduction__E_))
+
+    
+  
+
+```
+
+In part B (in the code block above), we add a specific rule to aggregate deletions of multiple characters that are done by selecting each character separately - this is something which occurred quite a lot for one particular writer, it may not be necessary for other materials.Also, we add an identification number for each segment (note that although the code calls everything 'jump' here it is actually all segments in between the boundaries we set before.)
+
+
+# preview of segmented data 
+
+```{r}
+head(data_add)
+
+# Or for the full table
+# view(data_add)
+```
+
+
+Now we will label each segment - adding a column with their type (delete, focus, jumps, typing et cetera). 
+This enables us to later calculate certain values for only the jumps or only the typing chunks, for example. 
+
+```{r include=FALSE}
+# Summary statistics for each jump event
+jump_add <- data_add %>%
+  group_by(session_number, jump_number) %>%
+  summarize(
+    action_types = paste(unique(event_type__E_), collapse = ", "),
+    key_types = paste(unique(type), collapse = ", ")
+     ) %>%
+  mutate(
+    jump_type = ifelse(grepl("delete_key", key_types), "delete",
+                ifelse(grepl("focus", action_types), "focus",
+                ifelse(action_types == "insert", "insert",
+                ifelse(action_types %in% c("keyboard", "keyboard, replacement") &
+                         grepl("visible_char|whitespace", key_types), "typing",
+                "jump"))))
+    )
+
+```
+
+
+## Add characteristics for each jump (step 3)
+
+For a description of the characteristics, please see our paper. 
+
+```{r include=FALSE}
+##############
+## Calculate characteristics for JUMPS ONLY 
+sum_jump <- data_add %>%
+  left_join(jump_add, by = c("session_number", "jump_number")) %>%
+  
+  # Remove first part of the session (not really a jump) & focus on jumps only
+  filter(jump_number != 1, jump_type == "jump") %>%
+  group_by(session_number, jump_number) %>%
+  summarize(
+    start_id_GA = first(event_id__E_),
+    start_time_rel = first(event_startTime__E_)/first(endTime_session),
+    jump_pause = first(event_pauseTime__E_),
+    start_position = first(event_positionFull__E_),
+    end_position = last(event_positionFull__E_),
+    start_position_rel = start_position/first(event_doclengthFull__E_),
+    end_position_rel = end_position/last(event_doclengthFull__E_),
+    start_position_edge = first(event_doclengthFull__E_)-start_position,
+    end_position_edge = last(event_doclengthFull__E_)-end_position,
+    start_location = first(prev_loc),
+    end_location = last(next_loc),
+    start_eventtype = first(event_type__E_),
+    end_eventtype = last(event_type__E_),
+    start_time = first(event_startTime__E_),
+    end_time = last(event_endTime__E_),
+    doclength = first(event_doclengthFull__E_),
+    
+    # Counts of types of events within jump
+    n_events = n(),
+    n_scroll_movements = sum(event_output__E_ == "Scroll"),
+    n_selections = sum(event_type__E_ == "replacement"),
+    n_arrowkeys = sum(type == "arrow_key")
+    ) %>%
+  mutate(   
+    jump_duration = end_time - start_time,
+    
+    ## Replace 0 by NA
+    start_position = ifelse(start_position == 0, NA, start_position),
+    start_position_rel = ifelse(start_position_rel == 0, NA, start_position_rel),
+    start_position_edge = ifelse(start_position_edge == 0, NA, start_position_edge),
+    jump_size_chars = end_position - start_position,
+    
+    direction = ifelse(jump_size_chars < 0, "backwards", "forwards"),
+    # slopes (delta characters/ delta time)
+    jump_slope = (jump_size_chars)/jump_duration,
+    #converting all jump sizes into positive values for adding up later
+    jump_size_charsPlus = ifelse(jump_size_chars < 0, jump_size_chars *-1, jump_size_chars),
+    # adding jump size relative to document size at that moment
+    jump_size_rel = jump_size_charsPlus/doclength
+  ) 
+
+# Filter irrelevant jumps:
+
+jump_filt <- sum_jump %>%
+  filter(jump_size_chars != 0)
+```
+
+## Add characteristics for each typing segment (step 3B)
+
+
+```{r include=FALSE}
+sum_typing <- data_add %>%
+  left_join(jump_add, by = c("session_number", "jump_number")) %>%
+  
+  # Remove first part of the session (not really a jump) & focus on typing only
+  filter(jump_number != 1, jump_type == "typing") %>%
+  group_by(session_number, jump_number) %>%
+  summarize(
+    start_id_GA = first(event_id__E_),
+    start_position = first(event_positionFull__E_),
+    end_position = last(event_positionFull__E_),
+    start_time = first(event_startTime__E_),
+    end_time = last(event_endTime__E_),
+    start_position_rel = start_position/first(event_doclengthFull__E_),
+    start_position_edge = first(event_doclengthFull__E_)-start_position,
+  ) %>%
+  mutate(   
+    typing_duration = end_time - start_time,
+    typing_size_chars = end_position - start_position,
+    start_position_rel = ifelse(start_position_rel == 0, NA, start_position_rel),
+    start_position_edge = ifelse(start_position_edge == 0, NA, start_position_edge))
+
+```
+
+## characteristics for each focus event (3C)
+
+We take this step to create a variable with the % of session time which was spent on focus events. Focus events are not a part of non-linearity - but is helpful to us later on to connect non-linearity to the writer's strategies during each session. So this is a 'bonus'step. 
+
+```{r include=FALSE}
+#  Calculate characteristics for FOCUS ONLY 
+sum_focus <- data_add %>%
+  mutate(
+    prev_pos = lag(event_positionFull__E_),
+    next_pos = lead(event_positionFull__E_),
+    prev_event = lag(event_type__E_),
+    next_event = lead(event_type__E_)
+  ) %>%
+  left_join(jump_add, by = c("session_number", "jump_number")) %>%
+  # Remove first part (not really a jump) & focus on focus events only
+  filter(jump_number != 1, jump_type == "focus") %>%
+    group_by(session_number, jump_number) %>%
+    summarize(
+      start_id_GA = first(event_id__E_),
+      start_time_rel = first(event_startTime__E_)/first(endTime_session),
+      jump_pause = first(event_pauseTime__E_),
+      #last position in text from which the focus event started
+      start_position = first(prev_pos),
+      #first position in text after the writer returned from the focus event 
+      end_position = last(next_pos),
+      start_position_rel = start_position/first(event_doclengthFull__E_),
+      end_position_rel = end_position/last(event_doclengthFull__E_),
+      start_position_edge = first(event_doclengthFull__E_)-start_position,
+      end_position_edge = last(event_doclengthFull__E_)-end_position,
+      start_location = first(prev_loc),
+      end_location = last(next_loc),
+      # last event in text from which the focus event started
+      start_eventtype = first(prev_event),
+      # first event in text after the writer returned from the focus event
+      end_eventtype = last(next_event),
+      start_time = first(event_startTime__E_),
+      end_time = last(event_endTime__E_)) %>%
+    mutate(   
+      jump_duration = end_time - start_time,
+      start_position = ifelse(start_position == 0, NA, start_position),
+      start_position_rel = ifelse(start_position_rel == 0, NA, start_position_rel),
+      start_position_edge = ifelse(start_position_edge == 0, NA, start_position_edge),
+      jump_size_chars = end_position - start_position,
+      # slopes (delta characters/ delta time)
+      jump_slope = (jump_size_chars)/jump_duration
+    )   
+```
+
+
+## Session-level summary table (step 4)
+
+
+
+```{r}
+
+# Summary statistics for each session (all, time and word count)
+sum_session <- data_add %>%
+  group_by(session_number)%>%
+  summarize(
+    total_time = last(event_endTime__E_) - first(event_startTime__E_),
+    total_time_seconds = total_time/1000,
+    total_time_minutes = total_time_seconds/60,
+    total_charproduced = last(event_charProduction__E_) - first(event_charProduction__E_)
+  ) %>%
+  mutate(
+    char_produced2 = total_charproduced - lag(total_charproduced)) %>%
+  left_join(sum_sum_focus)
+
+ 
+#added total jump time per session
+sum_session2 <- jump_filt %>%
+  group_by(session_number)%>%
+  summarize(
+    Jump_time = sum(jump_duration, na.rm = T)
+  ) %>% left_join(sum_session)
+#view(sum_session2)
+
+## Added TYPING chunks (size & duration & position relative to leading edge, also total amount of chars typed)
+sum_session3 <- sum_typing %>%
+  group_by(session_number)%>%
+  summarise(
+    MeanTypingChars = mean(typing_size_chars),
+    sdTypingChars = sd(typing_size_chars),
+    totalTypingChars = sum(typing_size_chars, na.rm = T),
+    MeanDurationTyping = mean(typing_duration),
+    sdDurationTyping = sd(typing_duration),
+    MeanTypingPositionRel = mean(start_position_rel),
+    sdTypingPositionRel = sd(start_position_rel),
+    MeanTypingPositionEdge = mean(start_position_edge),
+    sdTypingPositionEdge = sd(start_position_edge),
+    totalTypingChars = sum(typing_size_chars)
+  ) %>% left_join(sum_session2)
+
+```
+
+Next, we are adding information on where in the text a jump starts - for example: within a word, or after a sentence -. We then calculate the % of jumps that fall into each location-category for each session. 
+
+
+```{r}
+
+pivottableStartLoc <- count(jump_filt, start_location)
+
+# Pivot_wider helps to glue the two tables together at the appropriate junctions
+pivotwide <- pivot_wider(pivottableStartLoc, names_from = start_location, values_from = n)
+pivotfancy <- pivotwide %>% 
+   rename(
+      StartPos_AfterWords = `AFTER WORDS`,
+     # StartPos_BeforeParagraphs = `BEFORE PARAGRAPHS`,
+     # StartPos_BeforeWords = `BEFORE WORDS`,
+   #   StartPos_Change = CHANGE,
+      StartPos_Deletion = REVISION,
+    #  StartPos_WithinWords = `WITHIN WORDS`,
+      StartPos_BeforeSentences = `BEFORE SENTENCES`,
+      StartPos_AfterSentences = `AFTER SENTENCES`)
+   #   StartPos_unknown = UNKNOWN)
+
+   ## a number of categories do not occur in our sample sessions. You can remove the hashtag to include them if you have a different dataset. 
+
+   
+# Adding count of instances within each category 
+
+
+
+pivotfancy2 <- pivotfancy %>%
+   mutate(N = sum(StartPos_AfterWords,
+                  # StartPos_BeforeParagraphs, StartPos_BeforeWords, StartPos_Change, 
+# StartPos_WithinWords, StartPos_unknown,
+                  StartPos_Deletion,  StartPos_BeforeSentences,
+                  StartPos_AfterSentences, na.rm = T))
+
+# And changing raw counts to percentages ##
+pivotfancy3 <- pivotfancy2 %>%
+   mutate( StartPos_AfterWords_perc = 100/(N/StartPos_AfterWords),
+          # StartPos_BeforeParagraphs_perc = 100/(N/StartPos_BeforeParagraphs),
+         #  StartPos_BeforeWords_perc = 100/(N/StartPos_BeforeWords),
+         #  StartPos_Change_perc = 100/(N/StartPos_Change),
+           StartPos_Deletion_perc = 100/(N/StartPos_Deletion),
+        #   StartPos_WithinWords_perc = 100/(N/StartPos_WithinWords),
+           StartPos_BeforeSentences_perc = 100/(N/StartPos_BeforeSentences),
+           StartPos_AfterSentences_perc = 100/(N/StartPos_AfterSentences))
+
+
+## Removing unnecessary columns ##
+pivotfancy31 <- pivotfancy3 %>%
+   select(session_number, StartPos_AfterWords_perc,
+        #  StartPos_BeforeParagraphs_perc,
+        #  StartPos_BeforeWords_perc,
+        #  StartPos_Change_perc,
+          StartPos_Deletion_perc,
+        #  StartPos_WithinWords_perc,
+          StartPos_BeforeSentences_perc,
+          StartPos_AfterSentences_perc)
+
+## Replacing missing values by zero (0% instead of NA)
+pivotfancy4 <- mutate_at(pivotfancy31, vars(StartPos_AfterWords_perc:StartPos_AfterSentences_perc), ~replace(., is.na(.), 0))
+```
+
+
+
+```{r}
+sum_session4 <- sum_session3 %>%
+  group_by(session_number)%>%
+  mutate(Perc_time_focus = ifelse(sum(focus_time > 0) == 0, 0,
+                            100/( total_time / focus_time)),
+    Perc_time_jumps = ifelse(sum(Jump_time > 0) == 0, 0,
+                             100/( total_time / Jump_time))) %>%
+  
+  left_join(pivotfancy4)
+
+```
+
+And now on to the most important bit - adding descriptive writing session statistics from the jump characteristics.
+
+
+```{r}
+descriptives <- jump_filt %>%
+  group_by(session_number)%>%
+      summarize(
+    # Time-based
+    MeanDurationJumps = mean(jump_duration, na.rm = TRUE),
+    SD_DurationJumps = sd(jump_duration, na.rm = TRUE),
+    
+    # Position change 
+    MeanJumpsize_chars = mean(jump_size_chars, na.rm = T),
+    SDJumpsize_chars = sd(jump_size_chars, na.rm = T),
+    MeanJumpsize_rel = mean(jump_size_rel, na.rm = T),
+    SDJumpsize_rel = sd(jump_size_rel, na.rm = T),
+    
+    # All distances transformed to positive values
+    MeanJumpsize_chars_Plus = mean(jump_size_charsPlus, na.rm = T),
+    sdJumpsize_chars_Plus = sd(jump_size_charsPlus, na.rm = T),
+    
+    # Log transform of MeanJumpsize
+    logmeanJumpsize_chars_Plus = log(MeanJumpsize_chars_Plus),
+    
+    # Total jumpsize
+    TotalJumpsize =sum(jump_size_charsPlus),
+    logTotalJumpsize = log(TotalJumpsize),
+    
+    # Size of backwards jumps
+    MeanJumpSize_BackW = mean(jump_size_chars[jump_size_chars < 0], 
+                                na.rm = TRUE),
+    SDJumpSize_BackW = sd(jump_size_chars[jump_size_chars < 0], 
+                              na.rm = TRUE),
+    
+    # Size of forwards jumps
+    MeanJumpSize_Forw = mean(jump_size_chars[jump_size_chars > 0], 
+                             na.rm = TRUE),
+    SDJumpSize_Forw = sd(jump_size_chars[jump_size_chars > 0], 
+                          na.rm = TRUE),
+    
+    # Percentile of jumps that is backwards
+    Countrows = n(),
+   PercentageBackwardsJumps = ifelse( sum(jump_size_chars < 0) == 0,0,
+                                 100/(Countrows / sum(jump_size_chars < 0))),
+   
+   
+     # Slope = jump size in chars / duration
+   MeanJumpSlope = mean(jump_slope),
+   SDJumpSlope = sd(jump_slope),
+
+   # Start position relative to the leading edge (in percentile )
+   MeanStartPos_rel = mean(start_position_rel),
+   sdStartPos_rel = sd(start_position_rel),
+   
+   # Start position in characters from leading edge
+   MeanStartPos_edge = mean(start_position_edge),
+   sdStartPos_edge = sd(start_position_edge),
+   
+   # End position relative to the leading edge (in percentile)
+   MeanEndPos_rel = mean(end_position_rel),
+   sdEndPos_rel = sd(end_position_rel),
+   
+   # Content of jumps
+   Mean_n_events = mean(n_events),
+   sd_n_events = sd(n_events),
+   Mean_n_scroll_movements = mean(n_scroll_movements),
+   sd_n_scroll_movements = sd(n_scroll_movements))
+
+
+```
+
+# Sneakpeak at the output from the previous code block
+
+```{r}
+# Viewing the entire table 
+view(descriptives)
+
+## Overview of the added variables
+colnames(descriptives)
+```
+
+
+Merging two tables and adding a few other relative variables using information from one of the generic tables.  
+
+```{r}
+# Merging two tables
+descriptivesBig <- sum_session4 %>%
+  group_by(session_number) %>%
+left_join(descriptives)
+
+# Relative jump count added 
+descriptivesBigger <- descriptivesBig %>%
+  group_by(session_number) %>%
+  mutate(RelCountJumps = totalTypingChars/Countrows)
+
+
+# Detour added, it's a ratio (total jumpsize /characters typed) 
+descriptivesFinal <- descriptivesBigger %>%
+   group_by(session_number) %>%
+   mutate(Detour = TotalJumpsize/char_produced2, Author = "GB")
+
+
+```
+
+# inspecting the output table 
+
+```{r}
+view(descriptivesFinal) 
+
+# and to obtain a first impression of the dataset
+summary(descriptivesFinal)
+```
+
+
+
+## Final remarks
+
+We hope to have shown the ingredients of our analysis and the steps we took to demarcate keystroke logging files into non-linear jumps, texts bursts, focus and deletion events, followed by the application of descriptive statistics at the writing session-level. 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
