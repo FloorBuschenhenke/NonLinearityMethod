@@ -2,7 +2,7 @@
 
 This repository presents the code used to create a non-linearity analysis on the basis of keystroke data from the logger Inputlog, and accompanies the paper *Measuring non-linearity of long-term writing processes* (submitted to Reading & Writing special issue on methodology). For context, the abstract of our paper follows below. 
 
-<a href="https://zenodo.org/badge/latestdoi/406004501"><img src="https://zenodo.org/badge/406004501.svg" alt="DOI"></a>
+
 
 ## Abstract
 
