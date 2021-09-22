@@ -2,6 +2,8 @@
 
 This repository presents the code used to create a non-linearity analysis on the basis of keystroke data from the logger Inputlog, and accompanies the paper *Measuring non-linearity of long-term writing processes* (submitted to Reading & Writing special issue on methodology). For context, the abstract of our paper follows below. 
 
+<a href="https://zenodo.org/badge/latestdoi/406004501"><img src="https://zenodo.org/badge/406004501.svg" alt="DOI"></a>
+
 ## Abstract
 
 Non-linearity in writing provides important insight into the dynamics of writing and writing disfluencies. Currently, a range of linearity measures are available. These metrics are calculated based upon the leading edge, and are mostly used for short texts and single writing sessions. However, for longer, multi-session writing processes, the concept of the leading edge, as the singular outer boundary of the text-in-progress, is not enough to distinguish between linear production and non-linear text alterations.
@@ -18,3 +20,5 @@ Steps:
 3. Calculate characteristics for each jump event and each typing event
 4. Create a summary table with descriptive statistics for each session
 5. Running a correlation matrix, removing highly correlation variables, then performing a cluster analysis to explore similarities between sessions. This step is not included in this notebook.
+
+
