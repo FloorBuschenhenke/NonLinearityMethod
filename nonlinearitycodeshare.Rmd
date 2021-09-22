@@ -2,7 +2,9 @@
 title: "NonlinearityAnalysis"
 author: "Anonymous"
 date: "15-1-2021"
-output: html_document
+output:
+  pdf_document: default
+  html_document: default
 ---
 
 ```{r setup, include=FALSE}
@@ -27,7 +29,7 @@ We are using Inputlog-General Analysis files as our source material. You could a
 Steps:
 1. load all General Analysis files (one for each writing session) into R and merge them into one table, preserving the original session-numbering. (not including in this notebook)
 2. aggregate/annotate the keystroke events in this table into larger segments of typing, deleting, jumping/navigating and focus (activities outside of the work doc).
-3. Calculate characteristics for each jump event, each typing event and on a session-level for focus events
+3. Calculate characteristics for each jump event and each typing event
 4. Create a summary table with descriptive statistics for each session
 5. Running a correlation matrix, removing highly correlation variables, then performing a cluster analysis to explore similarities between sessions. This step is not included in this notebook. 
 
@@ -310,54 +312,6 @@ sum_typing <- data_add %>%
 
 ```
 
-## characteristics for each focus event (3C)
-
-We take this step to create a variable with the % of session time which was spent on focus events. Focus events are not a part of non-linearity - but is helpful to us later on to connect non-linearity to the writer's strategies during each session. So this is a 'bonus'step. 
-
-```{r include=FALSE}
-#  Calculate characteristics for FOCUS ONLY 
-sum_focus <- data_add %>%
-  mutate(
-    prev_pos = lag(event_positionFull__E_),
-    next_pos = lead(event_positionFull__E_),
-    prev_event = lag(event_type__E_),
-    next_event = lead(event_type__E_)
-  ) %>%
-  left_join(jump_add, by = c("session_number", "jump_number")) %>%
-  # Remove first part (not really a jump) & focus on focus events only
-  filter(jump_number != 1, jump_type == "focus") %>%
-    group_by(session_number, jump_number) %>%
-    summarize(
-      start_id_GA = first(event_id__E_),
-      start_time_rel = first(event_startTime__E_)/first(endTime_session),
-      jump_pause = first(event_pauseTime__E_),
-      #last position in text from which the focus event started
-      start_position = first(prev_pos),
-      #first position in text after the writer returned from the focus event 
-      end_position = last(next_pos),
-      start_position_rel = start_position/first(event_doclengthFull__E_),
-      end_position_rel = end_position/last(event_doclengthFull__E_),
-      start_position_edge = first(event_doclengthFull__E_)-start_position,
-      end_position_edge = last(event_doclengthFull__E_)-end_position,
-      start_location = first(prev_loc),
-      end_location = last(next_loc),
-      # last event in text from which the focus event started
-      start_eventtype = first(prev_event),
-      # first event in text after the writer returned from the focus event
-      end_eventtype = last(next_event),
-      start_time = first(event_startTime__E_),
-      end_time = last(event_endTime__E_)) %>%
-    mutate(   
-      jump_duration = end_time - start_time,
-      start_position = ifelse(start_position == 0, NA, start_position),
-      start_position_rel = ifelse(start_position_rel == 0, NA, start_position_rel),
-      start_position_edge = ifelse(start_position_edge == 0, NA, start_position_edge),
-      jump_size_chars = end_position - start_position,
-      # slopes (delta characters/ delta time)
-      jump_slope = (jump_size_chars)/jump_duration
-    )   
-```
-
 
 ## Session-level summary table (step 4)
 
@@ -375,8 +329,7 @@ sum_session <- data_add %>%
     total_charproduced = last(event_charProduction__E_) - first(event_charProduction__E_)
   ) %>%
   mutate(
-    char_produced2 = total_charproduced - lag(total_charproduced)) %>%
-  left_join(sum_sum_focus)
+    char_produced2 = total_charproduced - lag(total_charproduced))
 
  
 #added total jump time per session
@@ -472,9 +425,7 @@ pivotfancy4 <- mutate_at(pivotfancy31, vars(StartPos_AfterWords_perc:StartPos_Af
 ```{r}
 sum_session4 <- sum_session3 %>%
   group_by(session_number)%>%
-  mutate(Perc_time_focus = ifelse(sum(focus_time > 0) == 0, 0,
-                            100/( total_time / focus_time)),
-    Perc_time_jumps = ifelse(sum(Jump_time > 0) == 0, 0,
+  mutate( Perc_time_jumps = ifelse(sum(Jump_time > 0) == 0, 0,
                              100/( total_time / Jump_time))) %>%
   
   left_join(pivotfancy4)
