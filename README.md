@@ -1,6 +1,6 @@
 ## Introduction
 
-This repository presents the code used to create a non-linearity analysis on the basis of keystroke data from the logger Inputlog, and accompanies the paper *Measuring non-linearity of long-term writing processes* (submitted to Reading & Writing special issue on methodology). For context, the abstract of our paper follows below. 
+This repository presents the code used to create a non-linearity analysis on the basis of keystroke data from the logger Inputlog, and accompanies the paper *Measuring non-linearity of long-term writing processes* (written by Floor Buschenhenke, Rianne Conijn, Luuk Van Waes, submitted to Reading & Writing special issue on methodology). For context, the abstract of our paper follows below. 
 
 
 
